@@ -5,8 +5,9 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.52"
-ping = "0.4.0"
+cached = "0.30.0"
 directories = "4.0.1"
-winit = "=0.25"
-trayicon = { version = "0.1.3", features = ["winit"] }
 open = "2.0.2"
+ping = "0.4.0"
+trayicon = { version = "0.1.3", features = ["winit"] }
+winit = "=0.25"
