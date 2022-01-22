@@ -1,27 +1,30 @@
+// Don't spawn a cmd on windows
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[macro_use]
+extern crate log;
+extern crate simplelog;
+
 use std::{
-    fs::{create_dir, File, OpenOptions},
-    io::Write,
+    fs::{self, File, OpenOptions},
     net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
 
 use anyhow::{bail, Result};
-use cached::proc_macro::once;
 use directories::BaseDirs;
 use ping::ping;
+use simplelog::*;
 use trayicon::{MenuBuilder, TrayIcon, TrayIconBuilder};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop, EventLoopProxy},
-    window::WindowBuilder,
 };
 
-const KB: usize = 1024;
+const GOOGLE_DNS: IpAddr = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+const INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 enum Events {
@@ -46,21 +49,16 @@ impl<O, E> From<Result<O, E>> for Status {
 }
 
 fn main() -> Result<()> {
-    eprintln!("Log file path: {:#?}", get_log_path()?);
-
     make_log_file_if_not_exists()?;
-
-    // Allocate a thread-safe storage buffer for messages to log
-    let messages = Arc::new(Mutex::new(Vec::<u8>::new()));
 
     // Get the event loop
     let event_loop = EventLoop::<Events>::with_user_event();
 
     // Start pinging
-    spawn_worker_thread(Arc::clone(&messages));
+    spawn_worker_thread()?;
 
     // Let 'er rip
-    start_event_loop(messages, event_loop)?;
+    start_event_loop(event_loop)?;
 
     Ok(())
 }
@@ -86,69 +84,41 @@ fn make_tray(proxy: EventLoopProxy<Events>) -> Result<TrayIcon<Events>> {
     Ok(tray_icon)
 }
 
-fn spawn_worker_thread(messages: Arc<Mutex<Vec<u8>>>) {
+fn spawn_worker_thread() -> Result<()> {
+    use Status::{Down, Up};
+
+    WriteLogger::init(LevelFilter::Trace, Config::default(), get_log_file()?)?;
+
+    info!(
+        "Pinging Google DNS at {} every {} seconds",
+        GOOGLE_DNS,
+        INTERVAL.as_secs()
+    );
+
     thread::spawn(move || {
-        use Status::{Down, Up};
         let mut last_status: Status = Up;
         let mut cur_status: Status;
 
-        let mut messages_length = 0;
         loop {
-            cur_status = ping(
-                IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-                .into();
+            cur_status = ping(GOOGLE_DNS, None, None, None, None, None).into();
 
             match (last_status, cur_status) {
-                (Down, Up) => {
-                    let mut message_buf = messages.lock().unwrap();
-                    let message = "Shitternet came back up, hallelujah!\n";
-                    message_buf.extend_from_slice(message.as_bytes());
-                    messages_length += message.len();
-                }
-                (Up, Down) => {
-                    let mut message_buf = messages.lock().unwrap();
-                    let message = "Shitternet be shiddin (fard)!\n";
-                    message_buf.extend_from_slice(message.as_bytes());
-                    messages_length += message.len();
-                }
-                (Up, Up) => {
-                    let mut message_buf = messages.lock().unwrap();
-                    let message = "All good\n";
-                    message_buf.extend_from_slice(message.as_bytes());
-                    messages_length += message.len();
-                }
+                (Down, Up) => warn!("Ping started succeeding again"),
+                (Up, Down) => info!("Ping started failing"),
                 _ => {}
             }
 
             last_status = cur_status;
 
-            // Dump every
-            if messages_length >= 5 * KB {
-                try_dump_messages(&messages);
-
-                // We should clear messages length either way
-                // because other thread cleared messages or we did
-                messages_length = 0;
-            }
-
-            thread::sleep(Duration::from_secs(30));
+            thread::sleep(INTERVAL);
         }
     });
+
+    Ok(())
 }
 
-fn start_event_loop(messages: Arc<Mutex<Vec<u8>>>, event_loop: EventLoop<Events>) -> Result<()> {
+fn start_event_loop(event_loop: EventLoop<Events>) -> Result<()> {
     let log_path = get_log_path()?;
-
-    // Make an invisible window as the host for our app
-    let my_app_window = WindowBuilder::new()
-        .with_visible(false)
-        .build(&event_loop)?;
 
     // Make our tray
     let tray = make_tray(event_loop.create_proxy())?;
@@ -162,12 +132,11 @@ fn start_event_loop(messages: Arc<Mutex<Vec<u8>>>, event_loop: EventLoop<Events>
         match event {
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
-                window_id,
-            } if window_id == my_app_window.id() => *control_flow = ControlFlow::Exit,
+                ..
+            } => *control_flow = ControlFlow::Exit,
 
             Event::UserEvent(e) => match e {
                 Events::OpenLog => {
-                    try_dump_messages(&messages);
                     if let Err(e) = open::that(&log_path) {
                         eprintln!("Failed to open log file: {}", e)
                     }
@@ -180,7 +149,6 @@ fn start_event_loop(messages: Arc<Mutex<Vec<u8>>>, event_loop: EventLoop<Events>
     });
 }
 
-#[once(result = true)]
 fn get_log_path() -> Result<PathBuf> {
     let data_path = match BaseDirs::new() {
         None => bail!("Cannot find home directory"),
@@ -188,7 +156,7 @@ fn get_log_path() -> Result<PathBuf> {
     };
     let data_dir = data_path.join("shitternet");
     if !data_dir.exists() {
-        create_dir(&data_dir)?;
+        fs::create_dir(&data_dir)?;
     }
     Ok(data_path.join(&data_dir).join(Path::new("up_down.log")))
 }
@@ -209,14 +177,4 @@ fn make_log_file_if_not_exists() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn try_dump_messages(messages: &Arc<Mutex<Vec<u8>>>) {
-    let mut log = get_log_file().unwrap();
-
-    // Can't lock? Rick will be fine with old values
-    if let Ok(mut m) = messages.try_lock() {
-        log.write_all(m.as_slice()).unwrap();
-        m.clear();
-    }
 }

@@ -5,9 +5,10 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.52"
-cached = "0.30.0"
 directories = "4.0.1"
 open = "2.0.2"
 ping = "0.4.0"
 trayicon = { version = "0.1.3", features = ["winit"] }
 winit = "=0.25"
+log = "0.4.14"
+simplelog = "0.11.2"
