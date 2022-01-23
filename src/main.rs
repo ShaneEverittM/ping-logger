@@ -87,7 +87,14 @@ fn make_tray(proxy: EventLoopProxy<Events>) -> Result<TrayIcon<Events>> {
 fn spawn_worker_thread() -> Result<()> {
     use Status::{Down, Up};
 
-    WriteLogger::init(LevelFilter::Trace, Config::default(), get_log_file()?)?;
+    WriteLogger::init(
+        LevelFilter::Trace,
+        ConfigBuilder::new()
+            .set_time_format_str("%x %l:%M:%S%P")
+            .set_time_to_local(true)
+            .build(),
+        get_log_file()?,
+    )?;
 
     info!(
         "Pinging Google DNS at {} every {} seconds",
@@ -103,8 +110,8 @@ fn spawn_worker_thread() -> Result<()> {
             cur_status = ping(GOOGLE_DNS, None, None, None, None, None).into();
 
             match (last_status, cur_status) {
-                (Down, Up) => warn!("Ping started succeeding again"),
-                (Up, Down) => info!("Ping started failing"),
+                (Down, Up) => info!("Ping started succeeding again"),
+                (Up, Down) => warn!("Ping started failing"),
                 _ => {}
             }
 
